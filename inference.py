@@ -3,13 +3,10 @@ import tensorflow as tf
 import sys
 import os
 import json
-from typing import Union
 
 from utils.get_model import get_ae
 
-def sample_pz(batch_size: int = 1, 
-              z_dim: int = 16, 
-              sigma_z: float = 1.) -> tf.Tensor:
+def sample_pz(batch_size=1, z_dim=16, sigma_z=1.) -> tf.Tensor:
         return tf.random.normal(shape=(batch_size, z_dim),
                                 stddev=tf.sqrt(sigma_z))
 
@@ -24,14 +21,11 @@ def load_models(config: dict,
 
     return (enc, dec)
 
-def round_to_nearest(n: int, m: int) -> int:
+def round_to_nearest(n, m):
     """Returns n rounded to the nearest multiple of m"""
-    return m if n <= m else (int(n / m) + 1) * m 
+    return m if n <= m else ((n / m) + 1) * m 
 
-def get_first_untested() -> Union[str, None]:
-    """Returns the first experiment path (i.e. a subdir of `./runs`) 
-    that does not contain a `samples` subdir.
-    """
+def get_first_untested():
     candidates = []
     root = "./runs"
     subdirs = [d for d in os.listdir(root) if \
@@ -44,11 +38,9 @@ def get_first_untested() -> Union[str, None]:
             candidates.append(os.path.join(root,d))
         else:
             continue
-    
-    # If at least one candidate element, return it
+
     if len(candidates) > 0:
         return candidates[0]
-    # Otherwise ask the user which experiment is needed to be tested again
     else:
         print("\nAll experiments in `./runs` have been tested once.")
         print("\nArgument `next` can only be used when there is at least one untested dir.")
@@ -73,7 +65,7 @@ if __name__ == "__main__":
     #    e.g. : `./runs/wae_gan_03_08_2020-08:15:21`           
     parser.add_argument('--exp_dir', type=str, default='next')
     parser.add_argument('--num_samples', type=int, default=64)
-    parser.add_argument('--reconstruct', type=bool, default=False)
+    parser.add_argument('--reconstruct', type=bool, default=True)
     args = parser.parse_args()
 
     logdir = args.exp_dir

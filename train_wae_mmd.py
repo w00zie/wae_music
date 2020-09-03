@@ -9,6 +9,7 @@ from typing import Tuple
 from utils.data import get_dataset
 from utils.plot_utils import get_matrix_to_be_plotted
 from utils.get_model import get_ae
+from utils.metrics import calc_prec_recall
 
 
 class Train:
@@ -34,6 +35,7 @@ class Train:
         self.batch_size = config["batch_size"]#tf.constant(batch_size, dtype=tf.int32)
         self.sigma_z = config["sigma_z"]#tf.constant(sigma_z, dtype=tf.float32)
         self.lmbda = config["lambda"]#tf.constant(lmbda, dtype=tf.float32)
+        self.c_weight = config["c_weight"]
 
         # Models --------------------------------------------------------------
         self.encoder, self.decoder = get_ae(config, show_num_params=True)
@@ -60,14 +62,20 @@ class Train:
                                         test=True)
         tf.print("Done.")
 
-        # Metric trackers ------------------------------------------------------
-
-        self.avg_mse_test_loss = tf.keras.metrics.Mean(dtype=tf.float32)
+        # Metric trackers -----------------------------------------------------
+        ## Train --------------------------------------------------------------
         self.avg_enc_dec_train_loss = tf.keras.metrics.Mean(dtype=tf.float32)
-        self.avg_enc_dec_test_loss = tf.keras.metrics.Mean(dtype=tf.float32)
+        self.avg_mse_train_loss = tf.keras.metrics.Mean(dtype=tf.float32)
+        self.avg_prec_train = tf.keras.metrics.Mean(dtype=tf.float32)
+        self.avg_rec_train = tf.keras.metrics.Mean(dtype=tf.float32)
         self.avg_pre_loss = tf.keras.metrics.Mean(dtype=tf.float32)
+        ## Test ---------------------------------------------------------------
+        self.avg_mse_test_loss = tf.keras.metrics.Mean(dtype=tf.float32)
+        self.avg_enc_dec_test_loss = tf.keras.metrics.Mean(dtype=tf.float32)
         self.avg_pre_test_loss = tf.keras.metrics.Mean(dtype=tf.float32)
         self.avg_mmd_test = tf.keras.metrics.Mean(dtype=tf.float32)
+        self.avg_prec_test = tf.keras.metrics.Mean(dtype=tf.float32)
+        self.avg_rec_test = tf.keras.metrics.Mean(dtype=tf.float32)
 
     # Prior =====================================================================
     #@tf.function
@@ -118,15 +126,16 @@ class Train:
                    x_hat: tf.Tensor, 
                    pz: tf.Tensor, 
                    qz: tf.Tensor, 
-                   batch_size: tf.Tensor) -> tf.Tensor:
+                   batch_size: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         """Calculates the WAE-MMD loss:
                 c(x, G(qz)) + lambda * MMD_penalty
         where MMD_penalty is an unbiased U-statistic of the MMD.
         """
-        c = tf.math.reduce_mean(tf.reduce_sum(tf.square(batch - x_hat),
-                                              axis=[1,2,3]))
+        mse = self.c_weight * tf.reduce_mean(tf.reduce_sum(tf.square(batch - x_hat),
+                                             axis=[1,2,3]))
         penalty = self.mmd_penalty(pz, qz, batch_size)
-        return c + self.lmbda * penalty
+        ae_loss = mse + self.lmbda * penalty
+        return (ae_loss, mse)
 
     #@tf.function
     def mmd_penalty(self, 
@@ -170,18 +179,18 @@ class Train:
 
     # Optimization steps --------------------------------------------------------
     @tf.function
-    def train_enc_dec(self, batch: tf.Tensor) -> tf.Tensor:
+    def train_enc_dec(self, batch: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         batch_size = tf.shape(batch)[0]
         with tf.GradientTape() as enc_tape, tf.GradientTape() as dec_tape:
             qz = self.encoder(batch, training=True)
             x_hat = self.decoder(qz, training=True)
             pz = self.sample_pz(batch_size)
-            enc_dec_loss = self.total_loss(batch, x_hat, pz, qz, batch_size)
+            enc_dec_loss, mse = self.total_loss(batch, x_hat, pz, qz, batch_size)
         enc_grads = enc_tape.gradient(enc_dec_loss, self.encoder.trainable_variables)
         dec_grads = dec_tape.gradient(enc_dec_loss, self.decoder.trainable_variables)
         self.enc_optim.apply_gradients(zip(enc_grads, self.encoder.trainable_variables))
         self.dec_optim.apply_gradients(zip(dec_grads, self.decoder.trainable_variables))
-        return enc_dec_loss
+        return (x_hat, enc_dec_loss, mse)
 
     @tf.function
     def pre_train_enc_step(self, batch: tf.Tensor) -> tf.Tensor:
@@ -194,18 +203,30 @@ class Train:
 
     # One epoch runs ============================================================
     #@tf.function
-    def train_step(self) -> tf.Tensor:
+    def train_step(self) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """This method executes one epoch of training on the `train_dataset`. 
         It calculates the average training WAE loss during the epoch and returns them.
         """
         # Reset metrics
         self.avg_enc_dec_train_loss.reset_states()
+        self.avg_mse_train_loss.reset_states()
+        self.avg_prec_train.reset_states()
+        self.avg_rec_train.reset_states()
         # Run through an epoch of training
         for batch in self.train_dataset:
-            enc_dec_loss = self.train_enc_dec(batch)
+            x_hat, enc_dec_loss, mse = self.train_enc_dec(batch)
+            prec, rec = calc_prec_recall(batch=batch, x_hat=x_hat)
             # Log metrics for every batch
             self.avg_enc_dec_train_loss(enc_dec_loss)
-        return self.avg_enc_dec_train_loss.result()
+            self.avg_mse_train_loss(mse)
+            self.avg_prec_train(prec)
+            self.avg_rec_train(rec)
+        return (
+            self.avg_enc_dec_train_loss.result(),
+            self.avg_mse_train_loss.result(),
+            self.avg_prec_train.result(),
+            self.avg_rec_train.result()
+        )
 
     def pre_train_enc(self) -> None:
         """This method executes one epoch of pre-training on the `train_dataset`. 
@@ -225,12 +246,16 @@ class Train:
     def validation_step(self) -> Tuple[tf.Tensor, 
                                        tf.Tensor, 
                                        tf.Tensor, 
+                                       tf.Tensor,
+                                       tf.Tensor,
                                        tf.Tensor]:
         # Reset metrics
         self.avg_enc_dec_test_loss.reset_states()
         self.avg_mse_test_loss.reset_states()
         self.avg_pre_test_loss.reset_states()
         self.avg_mmd_test.reset_states()
+        self.avg_prec_test.reset_states()
+        self.avg_rec_test.reset_states()
         # Run through an epoch of validation
         for batch in self.test_dataset:
             batch_size = tf.shape(batch)[0]
@@ -238,18 +263,23 @@ class Train:
             q_z = self.encoder(batch, training=False)
             x_hat = self.decoder(q_z, training=False)
             penalty = self.mmd_penalty(p_z, q_z, batch_size)
-            c = tf.reduce_mean(tf.reduce_sum(tf.math.square(batch - x_hat), 
-                                             axis=[1,2,3]))
+            c = self.c_weight * tf.reduce_mean(tf.reduce_sum(tf.math.square(batch - x_hat), 
+                                               axis=[1,2,3]))
+            precision, recall = calc_prec_recall(batch=batch, x_hat=x_hat)
             # Log metrics for every batch
             self.avg_mmd_test(penalty)
             self.avg_mse_test_loss(c)
             self.avg_pre_test_loss(tf.reduce_mean(self.pre_train_loss(q_z)))
             self.avg_enc_dec_test_loss(c + self.lmbda*penalty)
+            self.avg_prec_test(precision)
+            self.avg_rec_test(recall)
         return (
             self.avg_enc_dec_test_loss.result(), 
             self.avg_mse_test_loss.result(),
             self.avg_pre_test_loss.result(),
-            self.avg_mmd_test.result()
+            self.avg_mmd_test.result(),
+            self.avg_prec_test.result(),
+            self.avg_rec_test.result()
         )
 
     # Plot utils ================================================================
@@ -346,20 +376,26 @@ class Train:
             start = time()
             for epoch in range(self.epochs):
                 # Train for one epoch
-                e_d_loss = self.train_step()
+                e_d_loss, mse_train, prec_train, rec_train = self.train_step()
                 # Display a few bars
                 if epoch % 5 == 0:
                     self.display_random_bar(epoch)
                     self.display_reconstruction(epoch)
-                    self.save_weights()
+                    #self.save_weights()
                 if epoch % 10 == 0:
-                    self.display_encoder_features(epoch)
-                    self.display_decoder_features(epoch)
+                    self.save_weights()
+                #if epoch % 10 == 0:
+                #    self.display_encoder_features(epoch)
+                #    self.display_decoder_features(epoch)
                 # Validate on the test set
-                test_loss, mse, pre_test_loss, mmd = self.validation_step()
+                test_loss, mse_test, pre_test_loss, mmd, prec_test, rec_test = \
+                    self.validation_step()
                 # Logging
                 tf.summary.scalar("Train/Encoder-Decoder Loss", 
                                   e_d_loss, step=epoch)
+                tf.summary.scalar("Train/MSE", mse_train, step=epoch)
+                tf.summary.scalar("Train/Precision", prec_train, step=epoch)
+                tf.summary.scalar("Train/Recall", rec_train, step=epoch)
                 tf.summary.scalar("Learning Rates/Encoder", 
                                   self.enc_optim._decayed_lr('float32').numpy(), 
                                   step=epoch)
@@ -369,8 +405,10 @@ class Train:
                 tf.summary.scalar("Test/Encoder-Decoder Loss", 
                                   test_loss, step=epoch)
                 tf.summary.scalar("Test/MMD-penalty", mmd, step=epoch)
-                tf.summary.scalar("Test/MSE", mse, step=epoch)
+                tf.summary.scalar("Test/MSE", mse_test, step=epoch)
                 tf.summary.scalar("Test/Pre-Loss", pre_test_loss, step=epoch)
+                tf.summary.scalar("Test/Precision", prec_test, step=epoch)
+                tf.summary.scalar("Test/Recall", rec_test, step=epoch)
                 self.log_hist(epoch)
 
                 tf.print("Epoch {}/{}  -  [train_loss = {}]  -  [test_loss = {}]  -  {}".\

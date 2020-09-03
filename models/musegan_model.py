@@ -82,7 +82,7 @@ def decoder(config: dict, name: str = "musegan_decoder") -> tf.keras.Model:
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.ReLU(name='act_2'),
             tf.keras.layers.Conv2DTranspose(filters=4*h_dim, 
-                                            kernel_size=[5,5],
+                                            kernel_size=kernel_size,#[5,5],
                                             use_bias=False,
                                             strides=(4,2),
                                             padding="same",
