@@ -83,7 +83,7 @@ These are a few plots from the training phases for both the models you can find 
 #### WAE-MMD
 
 <p align="center">
-<img src="img/gan_mmd_loss.png" width="425"/> <img src="img/mmd_penalty.png" width="425"/> 
+<img src="img/mmd_wae_loss.png" width="425"/> <img src="img/mmd_penalty.png" width="425"/> 
 </p>
 
 
