@@ -18,6 +18,8 @@ The repository is structured as following:
 - `train_wae_gan.py`: a script that runs a training of a WAE-GAN model (using the hparams in `configs/`).
 - `train_wae_mmd.py`: a script that runs a training of a WAE-MMD model (using the hparams in `configs/`).
 
+You can read my slides [here](machine_learning_presentation.pdf).
+
 ## The data
 
 The data I used is in the [pianoroll](https://en.wikipedia.org/wiki/Piano_roll) format, coming from a dataset published by a group of researchers of the [Academia Sinica](https://musicai.citi.sinica.edu.tw/) (Taiwan), as part of a paper[^2] where they jointly proposed a novel GAN (MuseGAN) and released the dataset where the model was trained on. You can check it out [here](https://salu133445.github.io/musegan/data).
